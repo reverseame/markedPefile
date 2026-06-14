@@ -55,13 +55,14 @@ IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_SHIFT = 28
 
 def all_zero(data):
     for byte in data:
-        if ord(byte) != 0:
+        # Iterating bytes yields ints in Python 3; tolerate str too.
+        if (byte if isinstance(byte, int) else ord(byte)) != 0:
             return False
     return True
 
 def section_real_size(section):
         max_size = max(section.SizeOfRawData, section.Misc_VirtualSize)
-        return max_size if not max_size % PAGE_SIZE else (max_size / PAGE_SIZE + 1) * PAGE_SIZE
+        return max_size if not max_size % PAGE_SIZE else (max_size // PAGE_SIZE + 1) * PAGE_SIZE
 
 class MarkedPE(PE):
     def __init__(self, name=None, data=None, fast_load=None, max_symbol_exports=MAX_SYMBOL_EXPORT_COUNT, virtual_layout=False, valid_pages=None, base_address=None, architecture=None):
@@ -137,14 +138,17 @@ class MarkedPE(PE):
                 self.visit_unwind(UnwindInfoStruct.chained_unwind_info.UnwindInfoStruct)
 
     def set_zero_word(self, address):
-        self.__data__ = self.__data__[:address + 2] + '\x00\x00' + self.__data__[address + 4:]
+        self.__data__ = self.__data__[:address + 2] + b'\x00\x00' + self.__data__[address + 4:]
 
     def set_zero_double_word(self, address):
-        self.__data__ = self.__data__[:address + 2] + '\x00\x00\x00\x00\x00\x00' + self.__data__[address + 8:]
+        self.__data__ = self.__data__[:address + 2] + b'\x00\x00\x00\x00\x00\x00' + self.__data__[address + 8:]
 
     def get_section_by_name(self, section_name):
         for section in self.sections:
-            if re.match(section_name, section.Name):
+            name = section.Name
+            if isinstance(name, (bytes, bytearray)):
+                name = bytes(name).decode('latin-1', 'replace')
+            if re.match(section_name, name):
             #if section.Name == section_name:
                 return section
         return None
@@ -163,7 +167,7 @@ class MarkedPE(PE):
 
     def marking(self):
         address_size = 4 if self.PE_TYPE == OPTIONAL_HEADER_MAGIC_PE else 8
-        null_address = '\x00\x00\x00\x00' if self.PE_TYPE == OPTIONAL_HEADER_MAGIC_PE else '\x00\x00\x00\x00\x00\x00\x00\x00'
+        null_address = b'\x00' * address_size
 
         self.set_visited(self.DOS_HEADER, MARKS['DOS_HEADER_BYTE'])
         self.set_visited(self.DOS_STUB, MARKS['DOS_STUB_BYTE'])
@@ -196,7 +200,7 @@ class MarkedPE(PE):
                 if import_directory.struct.Name:
                     self.set_visited(pointer=import_directory.struct.Name, size=len(import_directory.dll)+1, tag=MARKS['IMPORT_MODULE_NAME']) # known=True
                     index = import_directory.struct.Name + len(import_directory.dll)+1
-                    while self.__data__[index]=='\x90' and index<thunk_data_index:
+                    while self.__data__[index]==0x90 and index<thunk_data_index:
                         self.set_visited(pointer=index, size=1, tag=MARKS['IMPORT_MODULE_NAME'])
                         index += 1
 
@@ -211,7 +215,7 @@ class MarkedPE(PE):
                     if hasattr(function, 'hint_name_table_rva') and function.hint_name_table_rva:
                         self.set_visited(pointer=function.hint_name_table_rva, size=len(function.name)+3, tag=MARKS['IMPORT_BY_NAME']) # known=True
 
-                        if (((function.hint_name_table_rva + len(function.name)+3) % 2) != 0) and (self.__data__[function.hint_name_table_rva + len(function.name)+3] == '\x00'):
+                        if (((function.hint_name_table_rva + len(function.name)+3) % 2) != 0) and (self.__data__[function.hint_name_table_rva + len(function.name)+3] == 0):
                             self.set_visited(pointer=function.hint_name_table_rva + len(function.name)+3, size=1, tag=MARKS['IMPORT_BY_NAME']) # known=True
                     
                     
