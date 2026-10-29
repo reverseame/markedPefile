@@ -112,8 +112,11 @@ class MarkedPE(PE):
         if object:
             pointer = object.get_file_offset()
             size = object.sizeof()
-        index = pointer
-        while  index < pointer+size:
+        # Pointers computed from the structures (or from a wrong base address) may fall outside the
+        # image; only the bytes inside it can be marked.
+        index = max(pointer, 0)
+        end = min(pointer + size, len(self.__visited__))
+        while index < end:
             if self.__visited__[index] == MARKS['UNKW_BYTE'] or self.__visited__[index] == tag or force:
                 self.__visited__[index] = tag
             elif self.__visited__[index] == MARKS['NULL_PAGE']:
@@ -126,6 +129,8 @@ class MarkedPE(PE):
             index += 1
 
     def visit_unwind(self, UnwindInfoStruct):
+        if UnwindInfoStruct is None:  # UNWIND_INFO not readable (see PE.parse_unwind_info)
+            return
         unwind_init_size = Structure(self.__UNWIND_INFO_format_1__).sizeof()
         code_size = Structure(self.__UNWIND_CODE_format__).sizeof()
         untime_function_size = Structure(self.__IMAGE_RUNTIME_FUNCTION_ENTRY_format__).sizeof()
@@ -134,14 +139,29 @@ class MarkedPE(PE):
 
         if UnwindInfoStruct.Flags & UNW_FLAG_CHAININFO:
             self.set_visited(pointer=UnwindInfoStruct.get_file_offset() + unwind_init_size + ((UnwindInfoStruct.CountOfUnwindCode + 1) & ~1) * code_size, size=untime_function_size)
-            if UnwindInfoStruct.chained_unwind_info.UnwindInformation:
-                self.visit_unwind(UnwindInfoStruct.chained_unwind_info.UnwindInfoStruct)
+            chained = getattr(UnwindInfoStruct, 'chained_unwind_info', None)
+            if chained is not None and chained.UnwindInformation:
+                self.visit_unwind(chained.UnwindInfoStruct)
+
+    def writable_data(self):
+        """__data__ as a bytearray, so that derelocation can modify it in place.
+
+        Rebuilding an immutable bytes object for every modified field makes derelocation quadratic
+        in the image size (hours for large modules). Callers restore bytes with freeze_data().
+        """
+        if not isinstance(self.__data__, bytearray):
+            self.__data__ = bytearray(self.__data__)
+        return self.__data__
+
+    def freeze_data(self):
+        if isinstance(self.__data__, bytearray):
+            self.__data__ = bytes(self.__data__)
 
     def set_zero_word(self, address):
-        self.__data__ = self.__data__[:address + 2] + b'\x00\x00' + self.__data__[address + 4:]
+        self.writable_data()[address + 2:address + 4] = b'\x00\x00'
 
     def set_zero_double_word(self, address):
-        self.__data__ = self.__data__[:address + 2] + b'\x00\x00\x00\x00\x00\x00' + self.__data__[address + 8:]
+        self.writable_data()[address + 2:address + 8] = b'\x00\x00\x00\x00\x00\x00'
 
     def get_section_by_name(self, section_name):
         for section in self.sections:
