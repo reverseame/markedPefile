@@ -1,3 +1,3 @@
 [submodule "pefile"]
 	path = pefile
-	url = https://github.com/miguelmartinperez/pefile.git
+	url = https://github.com/reverseame/pefile.git
